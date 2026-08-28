@@ -25,7 +25,9 @@ git clone项目到本地，然后安装这两个库：pyqt5,pillow.
 
 ## 发布新版本
 
-本项目通过 GitHub Actions 在推送版本 tag 时自动构建并发布三平台可执行文件。
+合并到 `main` 后，GitHub Actions 会自动把 patch 版本加一（例如 `v2.0.1` → `v2.0.2`），构建 Windows exe、Linux AppImage、macOS zip，并发布到 [Release 页面](https://github.com/evilmordy/yolo-label-tool/releases)。
+
+也可以继续手动推送 `v*` tag，或在 Actions 里点 **Run workflow**，同样会出三平台安装包。
 
 
 
