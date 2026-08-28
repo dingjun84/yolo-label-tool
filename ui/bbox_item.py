@@ -71,7 +71,7 @@ class ResizeHandle(QGraphicsEllipseItem):
         self.parent_bbox._notify_edit_start()
         select_only_parent(self.parent_bbox)
         self._drag_start_pos = self.mapToScene(event.pos())
-        self._original_rect = self.parent_bbox.sceneBoundingRect()
+        self._original_rect = self.parent_bbox.scene_box_rect()
         event.accept()
     
     def mouseMoveEvent(self, event):
@@ -283,7 +283,7 @@ class BBoxItem(QGraphicsRectItem):
             select_only(self)
             self._is_dragging = True
             self._drag_start_pos = self.mapToScene(event.pos())
-            self._drag_start_rect = self.sceneBoundingRect()
+            self._drag_start_rect = self.scene_box_rect()
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -332,15 +332,21 @@ class BBoxItem(QGraphicsRectItem):
 
     # ======================= YOLO同步 =======================
 
+    def scene_box_rect(self) -> QRectF:
+        """框本身在 scene 中的矩形，不含控制点。"""
+        return self.mapRectToScene(self.rect())
+
     def _sync_to_yolo(self):
         """同步到YOLO归一化坐标"""
         if self.image_rect is None:
             return
-        
-        scene_rect = self.sceneBoundingRect()
+
+        scene_rect = self.scene_box_rect()
         img = self.image_rect
         iw, ih = img.width(), img.height()
-        
+        if iw <= 0 or ih <= 0:
+            return
+
         # YOLO格式：中心点 + 宽高（归一化）
         self.bbox_data.x_center = (scene_rect.center().x() - img.left()) / iw
         self.bbox_data.y_center = (scene_rect.center().y() - img.top()) / ih
@@ -350,6 +356,5 @@ class BBoxItem(QGraphicsRectItem):
     # ======================= 外部接口 =======================
 
     def set_image_rect(self, image_rect: QRectF):
-        """设置图像范围"""
+        """设置图像范围。只记录坐标系，不回写 YOLO（避免把控制点尺寸写进标注）。"""
         self.image_rect = image_rect
-        self._sync_to_yolo()

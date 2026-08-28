@@ -281,4 +281,3 @@ class OBBItem(QGraphicsPolygonItem):
 
     def set_image_rect(self, image_rect):
         self.image_rect = image_rect
-        self._sync_to_yolo()
