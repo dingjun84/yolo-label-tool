@@ -26,6 +26,7 @@ class OBBHandle(QGraphicsEllipseItem):
         else:
             self.setCursor(Qt.CrossCursor)
         self.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
 
     def hoverEnterEvent(self, event):
         colors = get_annotation_colors()
@@ -281,4 +282,3 @@ class OBBItem(QGraphicsPolygonItem):
 
     def set_image_rect(self, image_rect):
         self.image_rect = image_rect
-        self._sync_to_yolo()

@@ -22,6 +22,7 @@ class PolygonVertexHandle(QGraphicsEllipseItem):
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CrossCursor)
         self.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
 
     def hoverEnterEvent(self, event):
         colors = get_annotation_colors()
@@ -86,7 +87,6 @@ class PolygonItem(QGraphicsPolygonItem):
 
     def set_image_rect(self, image_rect):
         self.image_rect = image_rect
-        self._sync_to_yolo()
 
     def _clamp_point(self, point: QPointF) -> QPointF:
         if self.image_rect is None:
