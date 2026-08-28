@@ -39,6 +39,7 @@ class ResizeHandle(QGraphicsEllipseItem):
         self.setCursor(self._cursor())
         self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
 
     def _cursor(self):
         """根据控制点位置返回相应的鼠标光标"""
