@@ -1,11 +1,8 @@
 name: Build & Release YOLOTxtMaker
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
+  # 本仓库暂时只保留手动触发：需要发版时到 Actions 页面运行本工作流。
+  # 原触发条件为「push 到 main」或「推送 v* tag」，如需恢复请加回 push 段。
   workflow_dispatch:
 
 permissions:
