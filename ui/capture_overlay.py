@@ -39,6 +39,7 @@ from i18n.translator import tr
 
 CONFIRM_SIZE = 36
 WINDOW_REFRESH_MS = 400
+CURSOR_POLL_MS = 30  # 光标轮询间隔：mouseMoveEvent 被抢时的高亮兜底
 SHADOW_ALPHA = 120
 ACCENT = "#2f8ff5"
 ACCENT_DARK = "#1b6fc4"
@@ -84,6 +85,11 @@ class _CapturePane(QWidget):
             painter.setClipRegion(QRegion(full).subtracted(QRegion(local_hole)))
         painter.fillRect(full, QColor(0, 0, 0, SHADOW_ALPHA))
         painter.setClipping(False)
+        # 挖洞区必须留一层 alpha>0 的像素：layered 窗口 alpha=0 的像素
+        # 会被系统做鼠标穿透，双击确认会打到洞下面的真实窗口上
+        # （既截不了图，又误操作别的应用）。alpha=1 视觉上不可见。
+        if not local_hole.isEmpty():
+            painter.fillRect(local_hole, QColor(0, 0, 0, 1))
 
         # 描边/标签/对勾都在全局坐标里画，超出本面板的部分由窗口自己裁掉
         painter.translate(-self.pos().x(), -self.pos().y())
@@ -143,6 +149,7 @@ class CaptureOverlay(QObject):
         self._confirmed = False        # 防止双击/Enter/对勾触发两次截图
         self._last_press_at = None     # 自判双击用
         self._last_press_pos = QPoint()
+        self._last_cursor = QPoint(-1, -1)  # 轮询到的上次光标位
 
         self._setup_geometry()
 
@@ -156,6 +163,11 @@ class CaptureOverlay(QObject):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._reload_windows)
         self._refresh_timer.start(WINDOW_REFRESH_MS)
+
+        # 光标轮询兜底：系统把 mouseMove 派给更高 z 序窗口时仍能驱动高亮
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_cursor)
+        self._poll_timer.start(CURSOR_POLL_MS)
 
         self._reload_windows()
 
@@ -264,6 +276,64 @@ class CaptureOverlay(QObject):
             if win.contains(px, py):
                 return win
         return None
+
+    # ------------------------------------------------------------------ 轮询兜底
+    def _poll_cursor(self):
+        """光标轮询：mouseMoveEvent 被更高 z 序窗口抢走时仍能驱动高亮。
+
+        实测（Windows + Electron/Chromium 置顶应用）：遮罩显示后，其他
+        topmost 窗口会间歇性把遮罩面板压到下面，系统把 WM_MOUSEMOVE 派给
+        它们 —— 表现为「移动鼠标，高亮窗口不变」。这里每 CURSOR_POLL_MS
+        主动读一次 QCursor.pos()：
+
+        1. 光标位置变了就跑一遍 handle_move（幂等，hover 不变不重绘），
+           与 mouseMoveEvent 双驱动互补；
+        2. 检查光标处的本进程 widget 是否还是遮罩面板；不是（被主窗口或
+           其他进程的 topmost 窗口盖住）就立即夺回顶层 —— 保证后续
+           点击/双击落在遮罩上，不会误点到别的应用。
+        """
+        pos = QCursor.pos()
+        if pos != self._last_cursor:
+            self._last_cursor = pos
+            self.handle_move(pos)
+
+        covered = QApplication.widgetAt(pos)
+        need_raise = (
+            (covered is None and self._union.contains(pos))
+            or (covered is not None
+                and not any(covered is p for p in self._panes))
+        )
+        if need_raise:
+            self._ensure_on_top()
+
+    def _ensure_on_top(self):
+        """把所有面板重新插到系统 topmost 组的最前。
+
+        注意不能用 Qt 的 raise_()：它只做 SetWindowPos(HWND_TOP)，对已带
+        WS_EX_TOPMOST 的窗口**不会改变其在 topmost 组内的位置**，压不过
+        其他 topmost 窗口（Electron 置顶应用等）。必须用 HWND_TOPMOST
+        重设一次，Windows 才会把它重新插到 topmost 组顶。
+        """
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+                from ctypes import wintypes as wt
+
+                user32 = ctypes.WinDLL("user32")
+                # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                flags = 0x0001 | 0x0002 | 0x0010
+                for pane in self._panes:
+                    hwnd = wt.HWND(int(pane.winId()))
+                    user32.SetWindowPos(
+                        hwnd, wt.HWND(-1),  # HWND_TOPMOST
+                        0, 0, 0, 0, flags,
+                    )
+            except Exception:
+                for pane in self._panes:  # 退化：总比不 raise 好
+                    pane.raise_()
+        else:
+            for pane in self._panes:
+                pane.raise_()
 
     def _repaint(self):
         for pane in self._panes:
@@ -433,6 +503,7 @@ class CaptureOverlay(QObject):
             pane.hide()
 
     def close(self):
+        self._poll_timer.stop()
         self._refresh_timer.stop()
         for pane in self._panes:
             pane.releaseKeyboard()
