@@ -4,13 +4,22 @@ import sys
 
 block_cipher = None
 
+# 窗口截图后端按平台动态导入，PyInstaller 的静态分析可能漏掉，这里显式声明
+hiddenimports = ['core.capture']
+if sys.platform == 'darwin':
+    hiddenimports += ['core.capture.macos', 'objc', 'Quartz', 'Foundation']
+elif sys.platform.startswith('win'):
+    hiddenimports += ['core.capture.windows']
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('resources/style.qss', 'resources')],
-    hiddenimports=[],
+    datas=[
+        ('resources/style.qss', 'resources'),
+        ('resources/classes.txt', 'resources'),
+    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
