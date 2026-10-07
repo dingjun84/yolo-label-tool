@@ -164,6 +164,33 @@ QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
     background-color: {btn_hover};
 }}
 
+QComboBox {{
+    background-color: {input_bg};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-height: 24px;
+}}
+
+QComboBox:focus {{
+    border-color: {accent};
+}}
+
+QComboBox::drop-down {{
+    border: none;
+    width: 20px;
+}}
+
+QComboBox QAbstractItemView {{
+    background-color: {input_bg};
+    color: {text};
+    border: 1px solid {border};
+    selection-background-color: {accent_soft};
+    selection-color: {text};
+    outline: none;
+}}
+
 /* ===== 单选按钮 ===== */
 QRadioButton {{
     color: {text};

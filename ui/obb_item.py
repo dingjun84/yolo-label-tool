@@ -3,8 +3,13 @@ from PyQt5.QtWidgets import QGraphicsPolygonItem, QGraphicsEllipseItem, QGraphic
 from PyQt5.QtCore import Qt, QPointF, QLineF
 from PyQt5.QtGui import QPen, QPolygonF, QBrush, QColor
 
-from ui.theme_manager import get_annotation_colors
-from ui.graphics_utils import select_only, select_only_parent
+from ui.theme_manager import get_annotation_colors, get_class_color
+from ui.graphics_utils import (
+    create_class_label,
+    update_class_label,
+    select_only,
+    select_only_parent,
+)
 
 HANDLE_SIZE = 8
 
@@ -80,15 +85,37 @@ class OBBItem(QGraphicsPolygonItem):
         colors = get_annotation_colors()
         self.rotate_line.setPen(QPen(QColor(colors["rotate"]), 1, Qt.DashLine))
         self.rotate_line.setFlag(QGraphicsItem.ItemIsSelectable, False)
-        
+
+        self.class_text = create_class_label(
+            self, self.bbox_data.class_id, self.image_rect, QPointF(0, 0)
+        )
         self._is_dragging = False
         self._update_geometry()
 
     def _update_color(self, selected: bool):
-        colors = get_annotation_colors()
-        color = QColor(colors["selected"] if selected else colors["unselected"])
-        self.setPen(QPen(color, 2))
+        color = QColor(get_class_color(self.bbox_data.class_id))
+        if selected:
+            color = color.lighter(135)
+        self.setPen(QPen(color, 3 if selected else 2))
         self.setBrush(QBrush(Qt.transparent))
+
+    def _class_label_anchor(self) -> QPointF:
+        poly = self.polygon()
+        if poly.isEmpty():
+            return QPointF(0, 0)
+        return poly.boundingRect().topLeft()
+
+    def _refresh_class_label(self):
+        if getattr(self, "class_text", None) is not None:
+            update_class_label(
+                self.class_text, self.bbox_data.class_id,
+                self.image_rect, self._class_label_anchor(),
+            )
+
+    def refresh_class_style(self):
+        """class_id 改变后刷新框颜色与类别名。"""
+        self._update_color(self.isSelected())
+        self._refresh_class_label()
 
     def refresh_theme_colors(self):
         selected = self.isSelected()
@@ -147,6 +174,7 @@ class OBBItem(QGraphicsPolygonItem):
         self.rotate_line.setLine(QLineF(QPointF(top_center_x, top_center_y), rot_pos))
         
         self._sync_to_yolo()
+        self._refresh_class_label()
 
     def start_drag(self, handle_type, pos):
         self._drag_start_cx = self.cx
@@ -282,3 +310,6 @@ class OBBItem(QGraphicsPolygonItem):
 
     def set_image_rect(self, image_rect):
         self.image_rect = image_rect
+        # 构造时还没有 image_rect，无法归一化；这里补一次同步，避免写出无坐标的行。
+        self._sync_to_yolo()
+        self._refresh_class_label()

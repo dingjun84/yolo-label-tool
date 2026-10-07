@@ -81,6 +81,35 @@ THEMES = {
 _current_theme_id = DEFAULT_THEME
 _template_cache = None
 
+# 按类别固定配色（不随主题变化），下标 = class id，超出后循环取用。
+CLASS_COLORS = (
+    "#e11d48",  # 0 self_avatar
+    "#f59e0b",  # 1 nav_chat_icon
+    "#10b981",  # 2 nav_contacts_icon
+    "#06b6d4",  # 3 search_bar
+    "#3b82f6",  # 4 contact_item
+    "#8b5cf6",  # 5 message_input
+    "#ec4899",  # 6 send_button
+    "#14b8a6",  # 7 conversation_item
+    "#84cc16",  # 8 incoming_bubble
+    "#f97316",  # 9 outgoing_bubble
+    "#d946ef",  # 10 input_bar
+    "#0ea5e9",  # 11 single_chat
+    "#22c55e",  # 12 group_chat
+    "#a855f7",  # 13 contact_send_message
+    "#eab308",  # 14 nav_groups_icon
+)
+
+
+def get_class_colors():
+    return CLASS_COLORS
+
+
+def get_class_color(class_id):
+    if not CLASS_COLORS:
+        return "#ffffff"
+    return CLASS_COLORS[int(class_id) % len(CLASS_COLORS)]
+
 
 def _resources_dir():
     return Path(__file__).resolve().parent.parent / "resources"

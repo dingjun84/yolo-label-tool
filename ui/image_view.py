@@ -8,6 +8,8 @@ from ui.graphics_utils import pick_preferred_bbox_root
 class ImageView(QGraphicsView):
 
     bbox_selected = pyqtSignal(object)  # BBox gfx item or None
+    stamp_clicked = pyqtSignal(object)  # scene QPointF，盖框模式下左键单击
+    stamp_mode_changed = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -22,18 +24,36 @@ class ImageView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
 
         self.drawing_mode = False
+        self.stamp_mode = False
         self._draw_controller = None
 
     def set_draw_controller(self, controller):
         self._draw_controller = controller
 
     def set_drawing_mode(self, enabled: bool):
+        if enabled:
+            self.set_stamp_mode(False)
         self.drawing_mode = enabled
         if enabled:
             self.setDragMode(QGraphicsView.NoDrag)
             self.setFocus()
         else:
             self.setDragMode(QGraphicsView.ScrollHandDrag)
+
+    def set_stamp_mode(self, enabled: bool):
+        """盖框模式：左键单击画布即以点击点落一个模板框。"""
+        if enabled == self.stamp_mode:
+            return
+        self.stamp_mode = enabled
+        if enabled:
+            self.setDragMode(QGraphicsView.NoDrag)
+            self.setCursor(Qt.CrossCursor)
+            self.setFocus()
+        else:
+            self.unsetCursor()
+            if not self.drawing_mode:
+                self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.stamp_mode_changed.emit(enabled)
 
     def set_canvas_color(self, color_hex: str):
         self.setBackgroundBrush(QBrush(QColor(color_hex)))
@@ -86,6 +106,15 @@ class ImageView(QGraphicsView):
         self.fit_to_view()
 
     def mousePressEvent(self, event):
+        if self.stamp_mode:
+            if event.button() == Qt.LeftButton:
+                self.stamp_clicked.emit(self.mapToScene(event.pos()))
+                event.accept()
+                return
+            if event.button() == Qt.RightButton:
+                self.set_stamp_mode(False)
+                event.accept()
+                return
         if self.drawing_mode and self._draw_controller and event.button() == Qt.LeftButton:
             scene_pos = self.mapToScene(event.pos())
             self._draw_controller.add_point(scene_pos)
