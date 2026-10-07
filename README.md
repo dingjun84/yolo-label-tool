@@ -20,17 +20,37 @@ chmod +x YOLOTxtMaker.AppImage
 在 Release 页面下载 `YOLOTxtMaker-mac.zip`，解压后运行其中的 `YOLOTxtMaker.app`。
 
 ### 下载代码在本地运行
-需要 PyQt5（见 `requirements.txt`）。Windows / Linux：
 
-```bash
-pip install -r requirements.txt
+推荐用仓库里的脚本创建**项目内独立**的 conda 环境（Python 3.11，落在 `./.conda/envs/yolo-label-tool`，已被 `.gitignore` 忽略）。
+
+**Windows**（CMD / PowerShell）：
+
+```bat
+:: 首次：创建环境并装依赖
+conda create -y -p .\.conda\envs\yolo-label-tool python=3.11 pip
+.\.conda\envs\yolo-label-tool\python.exe -m pip install -r requirements.txt
+
+:: 之后每次：激活环境
+.\init.bat
 python main.py
 ```
 
-**macOS** 用仓库里的 `init.sh` 建好 conda 环境：
+**macOS / Linux / Git Bash**：
 
 ```bash
+# 首次：创建环境并装依赖
+conda create -y -p ./.conda/envs/yolo-label-tool python=3.11 pip
+./.conda/envs/yolo-label-tool/python.exe -m pip install -r requirements.txt   # Windows 用 python.exe，macOS 用 bin/python
+
+# 之后每次：激活环境（必须 source）
 source init.sh
+python main.py
+```
+
+不想用 conda 也可以直接在已装好 PyQt5 的解释器里跑：
+
+```bash
+pip install -r requirements.txt
 python main.py
 ```
 

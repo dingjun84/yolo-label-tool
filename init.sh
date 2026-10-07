@@ -18,12 +18,19 @@ fi
 _project_root="$(cd "$(dirname "$_script")" && pwd)"
 _env_prefix="$_project_root/.conda/envs/yolo-label-tool"
 
-if [ ! -x "$_env_prefix/bin/python" ]; then
+# 兼容 Windows（Git Bash / MSYS）与 Unix：conda 环境在 Windows 上把
+# python.exe 放在环境根目录，Unix 上才是 bin/python。
+if [ -x "$_env_prefix/bin/python" ]; then
+    _env_python="$_env_prefix/bin/python"
+elif [ -x "$_env_prefix/python.exe" ]; then
+    _env_python="$_env_prefix/python.exe"
+else
     echo "init.sh: 未找到 conda 环境 $_env_prefix" >&2
     echo "        请先创建：" >&2
     echo "          conda create -y -p \"$_env_prefix\" python=3.11 pip" >&2
     echo "          \"$_env_prefix/bin/pip\" install -r \"$_project_root/requirements.txt\"" >&2
-    unset _script _project_root _env_prefix
+    echo "        （Windows 把 bin/pip 换成 python.exe -m pip）" >&2
+    unset _script _project_root _env_prefix _env_python
     return 1 2>/dev/null || exit 1
 fi
 
@@ -31,7 +38,9 @@ fi
 # 才能使用 conda activate；若已是 shell 函数，则直接可用
 _conda_cmd="$(command -v conda 2>/dev/null)"
 if [ -z "$_conda_cmd" ]; then
-    for _c in "${CONDA_EXE:-}" "$HOME/miniconda3/bin/conda" "$HOME/anaconda3/bin/conda" /opt/anaconda3/bin/conda; do
+    for _c in "${CONDA_EXE:-}" "$HOME/miniconda3/bin/conda" "$HOME/anaconda3/bin/conda" \
+              "$HOME/miniconda3/Scripts/conda.exe" "$HOME/anaconda3/Scripts/conda.exe" \
+              "/opt/anaconda3/bin/conda"; do
         if [ -n "$_c" ] && [ -x "$_c" ]; then
             _conda_cmd="$_c"
             break
@@ -41,7 +50,7 @@ fi
 
 if [ -z "$_conda_cmd" ]; then
     echo "init.sh: 未找到 conda，请先安装 Miniconda/Anaconda" >&2
-    unset _script _project_root _env_prefix _conda_cmd _c
+    unset _script _project_root _env_prefix _env_python _conda_cmd _c
     return 1 2>/dev/null || exit 1
 fi
 
@@ -71,12 +80,12 @@ fi
 
 conda activate "$_env_prefix" || {
     echo "init.sh: conda activate 失败" >&2
-    unset _script _project_root _env_prefix _conda_cmd _c _sourced
+    unset _script _project_root _env_prefix _env_python _conda_cmd _c _sourced
     return 1 2>/dev/null || exit 1
 }
 
 echo "已进入环境: $CONDA_PREFIX"
-echo "  python: $(python -V 2>&1)"
+echo "  python: $("$_env_python" -V 2>&1)"
 echo "  运行程序: python main.py"
 
-unset _script _project_root _env_prefix _conda_cmd _c _sourced
+unset _script _project_root _env_prefix _env_python _conda_cmd _c _sourced

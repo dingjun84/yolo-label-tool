@@ -1,0 +1,13 @@
+# 行尾与编码策略
+#
+# Windows 批处理（.bat/.cmd）必须保持 CRLF：CMD 按字节流逐行解析，
+# LF 换行会让它从行中间断行，导致 "'xxx' is not recognized" 之类的报错。
+# 这里显式声明，避免 core.autocrlf 把 .bat 转成 LF。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell 脚本保持 LF（bash 必须，CRLF 会导致 $'\r' 报错）
+*.sh text eol=lf
+
+# 其余文本文件按平台默认处理
+* text=auto
