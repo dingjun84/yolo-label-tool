@@ -114,7 +114,7 @@ class WindowsWindowBackend(WindowBackend):
         return True, ""
 
     # ------------------------------------------------------------------ 枚举
-    def list_windows(self):
+    def list_windows(self, own_exclude=None):
         results = []
         my_pid = int(kernel32.GetCurrentProcessId())
 
@@ -133,7 +133,10 @@ class WindowsWindowBackend(WindowBackend):
                 pid = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                 if int(pid.value) == my_pid:
-                    return True  # 跳过自己（含截图覆盖层）
+                    # 本进程的窗口：只排除截图遮罩自己（own_exclude 为空则整个进程跳过），
+                    # 主窗口弹出来的对话框要能选。
+                    if own_exclude is None or int(hwnd) not in own_exclude:
+                        return True
 
                 rect = wintypes.RECT()
                 if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):

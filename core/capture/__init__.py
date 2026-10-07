@@ -8,6 +8,9 @@
 - ``list_windows()`` / ``hit_test()`` 的坐标是**后端自己的屏幕坐标系**
   （macOS 是逻辑点，Windows 是物理像素）。覆盖层用 ``main_screen_width()``
   与 Qt 主屏宽度之比换算到 Qt 逻辑坐标，见 ``ui/capture_overlay.py``。
+- ``list_windows(own_exclude=...)``：``own_exclude`` 是本进程里要排除的窗口 id
+  （截图遮罩自己）。为 ``None`` 时本进程窗口全部不列出；给集合时只排除集合里的，
+  同进程的对话框 / 消息框会照常返回。
 - ``grab_window()`` 一律返回 **PNG 字节**（原始分辨率，Retina 下是物理像素）。
 """
 
@@ -68,8 +71,13 @@ class WindowBackend:
         """返回 (是否可用, 不可用原因)。原因会直接展示给用户。"""
         raise NotImplementedError
 
-    def list_windows(self) -> list:
-        """按 z 序（最前 -> 最后）列出可吸附的窗口。"""
+    def list_windows(self, own_exclude=None) -> list:
+        """按 z 序（最前 -> 最后）列出可吸附的窗口。
+
+        ``own_exclude`` 是「本进程里要排除掉的窗口 id 集合」，也就是截图遮罩自己。
+        传集合时**只**排除这几个 —— 同进程的其它窗口照常列出，这样主窗口弹出来的
+        对话框 / 消息框才选得中；传 ``None`` 则是保守模式，本进程窗口一律不列出。
+        """
         raise NotImplementedError
 
     def grab_window(self, win: WindowInfo) -> bytes:
@@ -80,13 +88,14 @@ class WindowBackend:
         """主屏宽度，用**本后端坐标系**表示（用于换算到 Qt 逻辑坐标）。"""
         raise NotImplementedError
 
-    def hit_test(self, px: float, py: float) -> Optional[WindowInfo]:
+    def hit_test(self, px: float, py: float, own_exclude=None
+                 ) -> Optional[WindowInfo]:
         """返回坐标点命中的窗口。
 
         ``list_windows`` 已按 z 序排列，因此第一个命中的就是视觉上最上层的那个 ——
         比按面积挑更贴近用户的直觉。
         """
-        for win in self.list_windows():
+        for win in self.list_windows(own_exclude=own_exclude):
             if win.contains(px, py):
                 return win
         return None

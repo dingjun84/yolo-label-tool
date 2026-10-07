@@ -6,6 +6,10 @@
 
 坐标是 CoreGraphics 的全局显示坐标（逻辑点，原点在主显示器左上），
 与 Qt 在 macOS 上的坐标语义一致，所以覆盖层的换算系数通常是 1.0。
+
+窗口层：只取 ``kCGWindowLayer == 0`` 的普通窗口。Qt 的 ``Qt::Tool``（截图遮罩自己）
+和弹出菜单分别落在 8 / 101 层，所以遮罩天然不会被列进来；``own_exclude`` 只是
+再上一道保险。
 """
 
 from __future__ import annotations
@@ -105,7 +109,7 @@ class MacWindowBackend(WindowBackend):
         return True, ""
 
     # ------------------------------------------------------------------ 枚举
-    def list_windows(self):
+    def list_windows(self, own_exclude=None):
         if Quartz is None:
             raise CaptureUnavailable(INSTALL_HINT)
 
@@ -122,9 +126,15 @@ class MacWindowBackend(WindowBackend):
         windows = []
         for info in infos:
             try:
-                # 排除自己（包含正在显示的截图覆盖层本身）
+                number = int(_get(info, "kCGWindowNumber", 0))
+
+                # 本进程的窗口：只排除截图遮罩自己，其余（主窗口弹出来的
+                # 设置框 / 消息框等）都要能选。own_exclude 为 None 时退回
+                # 保守策略 —— 整个进程的窗口都不列出。
                 if int(_get(info, "kCGWindowOwnerPID", -1)) == my_pid:
-                    continue
+                    if own_exclude is None or number in own_exclude:
+                        continue
+
                 # 只要普通窗口层，跳过菜单栏/悬浮窗/Dock 之类
                 if int(_get(info, "kCGWindowLayer", 0)) != 0:
                     continue
@@ -139,7 +149,7 @@ class MacWindowBackend(WindowBackend):
                     continue
 
                 windows.append(WindowInfo(
-                    id=int(_get(info, "kCGWindowNumber", 0)),
+                    id=number,
                     title=str(_get(info, "kCGWindowName", "") or ""),
                     app=str(_get(info, "kCGWindowOwnerName", "") or ""),
                     x=x, y=y, width=width, height=height,
