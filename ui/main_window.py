@@ -1,12 +1,14 @@
 from PyQt5.QtWidgets import (
     QMainWindow, QFileDialog, QListWidget, QMessageBox,
     QAction, QDockWidget, QPushButton, QWidget, QActionGroup,
-    QVBoxLayout, QHBoxLayout, QListWidgetItem, QSpinBox, QLabel, QDialog, QRadioButton, QButtonGroup, QFrame
+    QVBoxLayout, QHBoxLayout, QListWidgetItem, QComboBox, QLabel, QDialog, QRadioButton, QButtonGroup, QFrame,
+    QProgressDialog
 )
 from PyQt5.QtCore import QRectF, pyqtSignal, Qt, QTimer, QPointF
-from PyQt5.QtGui import QFont, QKeySequence
+from PyQt5.QtGui import QColor, QFont, QIcon, QKeySequence, QPixmap
 from pathlib import Path
 import math
+import time
 
 from ui.image_view import ImageView
 from ui.bbox_item import BBoxItem
@@ -16,6 +18,7 @@ from ui.polygon_draw_controller import PolygonDrawController
 from ui.settings_dialog import SettingsDialog
 from core.label_manager import LabelManager
 from core.bbox import BBox
+from core.class_registry import get_class_names, class_label
 from core.yolo_io import load_yolo_txt, save_yolo_txt
 from core.settings_manager import (
     load_all, ShortcutKey, get_shortcut, key_event_matches,
@@ -24,9 +27,15 @@ from core.settings_manager import (
 )
 from core.undo_stack import UndoStack
 from core.bbox_clone import clone_bboxes
+from core.autolabel import (
+    AutolabelError, autolabel_folder, check_service,
+    has_model_prediction, human_label_path, model_label_path,
+)
+from core.capture import CaptureError, CaptureUnavailable, create_backend
+from ui.capture_overlay import CaptureOverlay
 from ui.graphics_utils import pick_preferred_bbox_root, resolve_bbox_root
 from utils.image_loader import load_image
-from ui.theme_manager import apply_theme, get_theme_ids, get_theme_name, get_current_theme_id
+from ui.theme_manager import apply_theme, get_theme_ids, get_theme_name, get_current_theme_id, get_class_color
 from i18n.translator import tr, set_language, on_language_changed
 from PyQt5.QtWidgets import QApplication
 
@@ -62,17 +71,25 @@ class MainWindow(QMainWindow):
         self._syncing_selection = False
         self._undo_stack = UndoStack()
         self._image_dirty = False
+        self._clipboard = []
+        self._stamp_template = None
+        self._class_actions = []
+        self._capture_overlay = None
+        self._capture_backend = None
 
         self._create_left_panel()
         self._create_right_panel()
         self._create_menu()
         self._setup_shortcuts()
+        self._setup_extra_shortcuts()
         self._update_periodic_timer()
 
         self.image_view.set_draw_controller(self.polygon_draw_controller)
         self.polygon_draw_controller.finished.connect(self._on_polygon_draw_finished)
         self.polygon_draw_controller.cancelled.connect(self._on_polygon_draw_cancelled)
         self.image_view.bbox_selected.connect(self._on_scene_selection_changed)
+        self.image_view.stamp_clicked.connect(self._on_stamp_click)
+        self.image_view.stamp_mode_changed.connect(self._on_stamp_mode_changed)
         self.bbox_list.currentRowChanged.connect(self._on_bbox_list_row_changed)
 
         on_language_changed(self._on_language_changed)
@@ -127,9 +144,33 @@ class MainWindow(QMainWindow):
             self._shortcut_actions[key] = action
 
     def _shortcut_add_bbox(self):
-        if self.polygon_draw_controller.is_active():
+        if self.polygon_draw_controller.is_active() or self.image_view.stamp_mode:
             return
         self.add_bbox()
+
+    def _bind_action(self, shortcut: str, handler) -> QAction:
+        action = QAction(self)
+        action.setShortcut(QKeySequence(shortcut))
+        action.triggered.connect(handler)
+        self.addAction(action)
+        return action
+
+    def _setup_extra_shortcuts(self):
+        """复制/粘贴/盖框 + 数字键赋类别（不进入设置面板）。"""
+        self._bind_action("Ctrl+C", self._copy_selected_bbox)
+        self._bind_action("Ctrl+Shift+C", self._copy_all_in_image)
+        self._bind_action("Ctrl+V", self._paste_bboxes)
+        self._bind_action("Ctrl+D", self._toggle_stamp_mode)
+
+        # 0-9 / -(=10) / =(=11) / [(=12)，按 get_class_names 的长度自动截断
+        _class_keys = [str(i) for i in range(10)] + ["-", "=", "[", "]", "\\"]
+        for class_id, key in enumerate(_class_keys[: len(get_class_names())]):
+            self._class_actions.append(
+                self._bind_action(
+                    key,
+                    lambda _checked=False, cid=class_id: self._apply_class_shortcut(cid),
+                )
+            )
 
     def _shortcut_delete(self):
         if self.polygon_draw_controller.is_active():
@@ -155,6 +196,10 @@ class MainWindow(QMainWindow):
             action.setShortcut(QKeySequence(seq))
 
     def keyPressEvent(self, event):
+        if self.image_view.stamp_mode and event.key() == Qt.Key_Escape:
+            self.image_view.set_stamp_mode(False)
+            event.accept()
+            return
         if self.polygon_draw_controller.is_active():
             if event.key() == Qt.Key_Backspace and not event.modifiers():
                 if self.polygon_draw_controller.remove_last_point():
@@ -185,6 +230,16 @@ class MainWindow(QMainWindow):
         self.image_list_widget = QListWidget()
         self.image_list_widget.currentRowChanged.connect(self.on_image_list_row_changed)
         layout.addWidget(self.image_list_widget)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        self.btn_screenshot = QPushButton(tr("btn.screenshot"))
+        self.btn_screenshot.clicked.connect(self.start_window_capture)
+        self.btn_autolabel = QPushButton(tr("btn.autolabel"))
+        self.btn_autolabel.clicked.connect(self.run_autolabel)
+        action_row.addWidget(self.btn_screenshot)
+        action_row.addWidget(self.btn_autolabel)
+        layout.addLayout(action_row)
 
         dock.setWidget(panel)
         self.addDockWidget(0x1, dock)
@@ -236,6 +291,14 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self._make_separator())
 
+        self.class_legend_label = QLabel(tr("label.class_legend"))
+        layout.addWidget(self.class_legend_label)
+        self.class_legend = QListWidget()
+        self.class_legend.setMaximumHeight(160)
+        layout.addWidget(self.class_legend)
+
+        layout.addWidget(self._make_separator())
+
         mode_layout = QVBoxLayout()
         mode_layout.setSpacing(4)
         self.mode_group = QButtonGroup(self)
@@ -265,11 +328,11 @@ class MainWindow(QMainWindow):
         class_layout = QHBoxLayout()
         self.class_id_label = QLabel(tr("label.class_id"))
         class_layout.addWidget(self.class_id_label)
-        self.class_id_spinbox = QSpinBox()
-        self.class_id_spinbox.setMinimum(0)
-        self.class_id_spinbox.setMaximum(999)
-        self.class_id_spinbox.valueChanged.connect(self.on_class_id_changed)
-        class_layout.addWidget(self.class_id_spinbox)
+        self.class_combo = QComboBox()
+        for class_id in range(len(get_class_names())):
+            self.class_combo.addItem(class_label(class_id), class_id)
+        self.class_combo.currentIndexChanged.connect(self.on_class_combo_changed)
+        class_layout.addWidget(self.class_combo)
         layout.addLayout(class_layout)
 
         layout.addWidget(self._make_separator())
@@ -378,10 +441,13 @@ class MainWindow(QMainWindow):
         self._ui_refs["btn_del"].setText(tr("btn.delete"))
         self._ui_refs["btn_save"].setText(tr("btn.save_yolo"))
         self.bbox_list_label.setText(tr("label.bbox_list"))
+        self.class_legend_label.setText(tr("label.class_legend"))
         self.radio_rect.setText(tr("mode.rect"))
         self.radio_obb.setText(tr("mode.obb"))
         self.radio_polygon.setText(tr("mode.polygon"))
         self.class_id_label.setText(tr("label.class_id"))
+        self.btn_screenshot.setText(tr("btn.screenshot"))
+        self.btn_autolabel.setText(tr("btn.autolabel"))
         if self.image_list:
             self._refresh_image_list()
 
@@ -473,11 +539,12 @@ class MainWindow(QMainWindow):
             self.bbox_list.blockSignals(False)
 
             bbox = self.label_manager.bboxes[row]
-            self.class_id_spinbox.blockSignals(True)
-            self.class_id_spinbox.setValue(bbox.class_id)
-            self.class_id_spinbox.blockSignals(False)
+            self.class_combo.blockSignals(True)
+            self._set_combo_class(bbox.class_id)
+            self.class_combo.blockSignals(False)
         finally:
             self._syncing_selection = False
+        self._refresh_all_bbox_styles()
 
     def _clear_bbox_selection(self):
         self._syncing_selection = True
@@ -490,6 +557,12 @@ class MainWindow(QMainWindow):
             self.bbox_list.blockSignals(False)
         finally:
             self._syncing_selection = False
+        self._refresh_all_bbox_styles()
+
+    def _refresh_all_bbox_styles(self):
+        """scene.clearSelection() 不会触发 item 的 setSelected 覆写，需手动刷新配色。"""
+        for item in self.bbox_items.values():
+            item.refresh_class_style()
 
     def _sync_list_from_scene(self):
         bbox_id = self._selected_bbox_id()
@@ -586,8 +659,8 @@ class MainWindow(QMainWindow):
     def _on_polygon_draw_finished(self, scene_points):
         self.image_view.set_drawing_mode(False)
         self._push_undo_snapshot()
-        bbox_id = len(self.label_manager.bboxes)
-        class_id = self.class_id_spinbox.value()
+        bbox_id = self._next_bbox_id()
+        class_id = self._current_class_id()
         bbox = BBox(bbox_id, class_id, type='polygon', points=[])
         self.label_manager.add(bbox)
 
@@ -698,12 +771,31 @@ class MainWindow(QMainWindow):
         txt_path = self.save_folder_path / img_path.with_suffix(".txt").name
         return txt_path.is_file() and txt_path.stat().st_size > 0
 
+    def _has_model_prediction(self, img_path: Path) -> bool:
+        """是否有还没人工校正过的模型预标注。"""
+        if not self.save_folder_path:
+            return False
+        return has_model_prediction(img_path, self.save_folder_path)
+
+    def _discard_model_prediction(self, img_path: Path):
+        """清掉模型预标注 —— 它的存在就是「这张图还没人工校正」的标记。"""
+        if not self.save_folder_path:
+            return
+        path = model_label_path(img_path, self.save_folder_path)
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
     def _format_list_item_text(self, img_path: Path, index: int) -> str:
         name = img_path.name
         if index == self.current_image_index and self._image_dirty:
             return tr("list.modified", name=name)
         if self._has_labeled_txt(img_path):
             return tr("list.labeled", name=name)
+        if self._has_model_prediction(img_path):
+            return tr("list.predicted", name=name)
         return tr("list.unlabeled", name=name)
 
     def _refresh_image_list_item(self, index: int):
@@ -721,6 +813,7 @@ class MainWindow(QMainWindow):
 
     def _load_image(self, image_path: Path):
         self._cancel_polygon_drawing()
+        self.image_view.set_stamp_mode(False)
         self.image_view.set_drawing_mode(False)
 
         if not self.save_folder_path:
@@ -738,8 +831,16 @@ class MainWindow(QMainWindow):
             pixmap = load_image(self.current_image_path)
             self.image_view.load_pixmap(pixmap)
 
-            txt_path = self.save_folder_path / image_path.with_suffix(".txt").name
-            self.label_manager.bboxes = load_yolo_txt(txt_path)
+            # 有人工标注就用人工的；没有则回退加载模型预标注 <stem>_model.txt，
+            # 让人工在模型结果上改，而不是从零开始画
+            human_path = human_label_path(image_path, self.save_folder_path)
+            if human_path.is_file():
+                self.label_manager.bboxes = load_yolo_txt(human_path)
+            else:
+                model_path = model_label_path(image_path, self.save_folder_path)
+                self.label_manager.bboxes = (
+                    load_yolo_txt(model_path) if model_path.is_file() else []
+                )
             self._undo_stack.clear()
 
             self.image_view.scene.clear()
@@ -812,6 +913,8 @@ class MainWindow(QMainWindow):
         try:
             txt_path = self.save_folder_path / self.current_image_path.with_suffix(".txt").name
             save_yolo_txt(txt_path, self.label_manager.bboxes)
+            # 保存即视为「这张图人工校正完毕」，撤掉预标注标记
+            self._discard_model_prediction(self.current_image_path)
             self._clear_dirty()
             if show_toast:
                 self._show_toast(tr("toast.save_success"))
@@ -831,9 +934,14 @@ class MainWindow(QMainWindow):
                 txt_path = self.save_folder_path / img_path.with_suffix(".txt").name
                 if i == self.current_image_index:
                     bboxes = self.label_manager.bboxes
-                else:
+                elif txt_path.is_file():
                     bboxes = load_yolo_txt(txt_path)
+                else:
+                    # 既不是当前图、又没有人工标注文件：别凭空写一个空 txt，
+                    # 否则会把图片从「未标注」变成「已标注」（定时保存尤其明显）
+                    continue
                 save_yolo_txt(txt_path, bboxes)
+                self._discard_model_prediction(img_path)
             self._clear_dirty()
             if show_toast:
                 self._show_toast(tr("toast.periodic_save_done"))
@@ -841,6 +949,181 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, tr("msg.save_failed"), tr("msg.save_txt_failed", error=str(e))
             )
+
+    # ======================= 窗口截图 =======================
+
+    def start_window_capture(self):
+        """打开窗口吸附截图遮罩（参考微信截图）。"""
+        if not self.save_folder_path:
+            QMessageBox.warning(
+                self, tr("msg.warning"), tr("msg.set_save_path_first")
+            )
+            return
+
+        try:
+            backend = create_backend()
+        except CaptureUnavailable as e:
+            QMessageBox.warning(self, tr("msg.warning"), str(e))
+            return
+
+        ok, reason = backend.available()
+        if not ok:
+            QMessageBox.warning(self, tr("msg.warning"), reason)
+            return
+
+        self._capture_backend = backend
+        self._capture_overlay = CaptureOverlay(backend)
+        self._capture_overlay.captured.connect(self._on_window_captured)
+        self._capture_overlay.show()
+
+    def _on_window_captured(self, window):
+        """遮罩里选定窗口后：截图 -> 存盘 -> 插进列表并切过去。"""
+        backend = self._capture_backend
+        if backend is None:
+            return
+
+        try:
+            png = backend.grab_window(window)
+        except CaptureError as e:
+            QMessageBox.warning(
+                self, tr("msg.error"), tr("msg.capture_failed", error=str(e))
+            )
+            return
+        except Exception as e:
+            QMessageBox.warning(
+                self, tr("msg.error"), tr("msg.capture_failed", error=str(e))
+            )
+            return
+
+        path = self._next_capture_path()
+        try:
+            path.write_bytes(png)
+        except OSError as e:
+            QMessageBox.warning(
+                self, tr("msg.error"), tr("msg.capture_failed", error=str(e))
+            )
+            return
+
+        self._insert_captured_image(path)
+        self._show_toast(tr("toast.capture_saved", name=path.name))
+
+    def _next_capture_path(self) -> Path:
+        stem = time.strftime("shot_%Y%m%d_%H%M%S")
+        candidate = self.save_folder_path / f"{stem}.png"
+        index = 1
+        while candidate.exists():
+            index += 1
+            candidate = self.save_folder_path / f"{stem}_{index}.png"
+        return candidate
+
+    def _insert_captured_image(self, path: Path):
+        """把刚截的图插进列表（保持排序）并切换过去，省得手动刷新。"""
+        if path not in self.image_list:
+            self.image_list.append(path)
+            self.image_list.sort()
+        self.current_image_index = self.image_list.index(path)
+        self._load_image(path)
+        self._refresh_image_list()
+        self._update_nav_label()
+
+    # ======================= 模型预标注 =======================
+
+    def run_autolabel(self):
+        """对当前文件夹调预标注服务，生成 <stem>_model.txt 供人工校正。"""
+        if not self.save_folder_path:
+            QMessageBox.warning(
+                self, tr("msg.warning"), tr("msg.set_save_path_first")
+            )
+            return
+        if not self.image_list:
+            QMessageBox.warning(
+                self, tr("msg.warning"), tr("msg.open_folder_first")
+            )
+            return
+
+        api_url = self._app_settings.yolo_api_url
+        # 已有非空人工标注的图不必再跑 —— 重跑只会把它的状态打回「待校正」
+        pending = [p for p in self.image_list if not self._has_labeled_txt(p)]
+        if not pending:
+            QMessageBox.information(
+                self, tr("msg.info"), tr("autolabel.nothing_to_do")
+            )
+            return
+
+        answer = QMessageBox.question(
+            self, tr("autolabel.title"),
+            tr("autolabel.confirm", count=len(pending), url=api_url),
+            QMessageBox.Ok | QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Ok:
+            return
+
+        try:
+            check_service(api_url)
+        except AutolabelError as e:
+            QMessageBox.warning(
+                self, tr("msg.error"), tr("autolabel.failed", error=str(e))
+            )
+            return
+
+        progress = QProgressDialog(
+            tr("autolabel.progress_title"), tr("btn.cancel"),
+            0, len(pending), self,
+        )
+        progress.setWindowTitle(tr("autolabel.title"))
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+
+        def on_progress(done, total, image, _status):
+            progress.setValue(done)
+            progress.setLabelText(
+                tr("autolabel.progress", done=done, total=total, name=image.name)
+            )
+            # 让进度条刷新、让「取消」有机会被点
+            QApplication.processEvents()
+
+        try:
+            report = autolabel_folder(
+                pending,
+                api_url=api_url,
+                conf=self._app_settings.yolo_conf,
+                iou=self._app_settings.yolo_iou,
+                imgsz=self._app_settings.yolo_imgsz,
+                save_folder=self.save_folder_path,
+                skip_labeled=True,
+                on_progress=on_progress,
+                should_cancel=progress.wasCanceled,
+            )
+        except AutolabelError as e:
+            progress.close()
+            QMessageBox.warning(
+                self, tr("msg.error"), tr("autolabel.failed", error=str(e))
+            )
+            return
+        finally:
+            progress.close()
+
+        # 当前图若还没人工标注，重新载入一次，让模型框立刻出现在画布上
+        if self.current_image_path and not self._has_labeled_txt(self.current_image_path):
+            self._load_image(self.current_image_path)
+        self._refresh_image_list()
+
+        detail = ""
+        failed = [r for r in report.results if r.status == "failed"]
+        if failed:
+            detail = "\n\n" + "\n".join(
+                f"{r.image.name}：{r.error}" for r in failed[:5]
+            )
+            if len(failed) > 5:
+                detail += f"\n…另有 {len(failed) - 5} 张失败"
+
+        QMessageBox.information(
+            self, tr("autolabel.done_title"), report.summary() + detail
+        )
+        self._show_toast(tr("toast.autolabel_done", summary=report.summary()))
 
     def _show_toast(self, message):
         toast = QLabel(message)
@@ -873,15 +1156,31 @@ class MainWindow(QMainWindow):
             else:
                 prefix = "[Poly]"
                 extra = f" | {len(bbox.points or [])}pts"
-            text = f"{prefix} ID{bbox.id} | Class: {bbox.class_id}{extra}"
+            text = f"{prefix} ID{bbox.id} | {class_label(bbox.class_id)}{extra}"
             self.bbox_list.addItem(text)
+        self._refresh_class_legend()
         self._sync_list_from_scene()
+
+    def _refresh_class_legend(self):
+        self.class_legend.clear()
+        counts = {}
+        for bbox in self.label_manager.bboxes:
+            counts[bbox.class_id] = counts.get(bbox.class_id, 0) + 1
+        if not counts:
+            return
+        for class_id in sorted(counts):
+            item = QListWidgetItem(f"■ {class_label(class_id)} ×{counts[class_id]}")
+            pm = QPixmap(12, 12)
+            pm.fill(QColor(get_class_color(class_id)))
+            item.setIcon(QIcon(pm))
+            self.class_legend.addItem(item)
 
     def add_bbox(self):
         if not self.current_image_path:
             QMessageBox.warning(self, tr("msg.info"), tr("msg.open_image_first"))
             return
 
+        self.image_view.set_stamp_mode(False)
         img_rect = self._get_image_rect()
         self._current_img_rect = img_rect
 
@@ -898,11 +1197,12 @@ class MainWindow(QMainWindow):
         y = (img_h - box_h) / 2
 
         self._push_undo_snapshot()
-        bbox_id = len(self.label_manager.bboxes)
+        bbox_id = self._next_bbox_id()
+        class_id = self._current_class_id()
         is_obb = self.radio_obb.isChecked()
 
         if is_obb:
-            bbox = BBox(bbox_id, 0, type='obb', points=[])
+            bbox = BBox(bbox_id, class_id, type='obb', points=[])
             self.label_manager.add(bbox)
 
             cx = img_w / 2
@@ -915,7 +1215,7 @@ class MainWindow(QMainWindow):
             self.image_view.scene.addItem(item)
             self.bbox_items[bbox_id] = item
         else:
-            bbox = BBox(bbox_id, 0, type='rect', x_center=0.5, y_center=0.5, width=0.2, height=0.2)
+            bbox = BBox(bbox_id, class_id, type='rect', x_center=0.5, y_center=0.5, width=0.2, height=0.2)
             self.label_manager.add(bbox)
 
             rect = QRectF(0, 0, box_w, box_h)
@@ -961,7 +1261,7 @@ class MainWindow(QMainWindow):
         else:
             self._clear_bbox_selection()
 
-    def on_class_id_changed(self, value):
+    def on_class_combo_changed(self, _index):
         bbox_id = self._selected_bbox_id()
         if bbox_id is None:
             return
@@ -969,7 +1269,188 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
 
+        value = self._current_class_id()
+        if self.label_manager.bboxes[row].class_id == value:
+            return
+
         self._push_undo_snapshot()
         self.label_manager.bboxes[row].class_id = value
+        self._refresh_bbox_class_style(bbox_id)
         self.refresh_bbox_list()
         self._select_bbox_by_id(bbox_id)
+
+    # ======================= 类别 =======================
+
+    def _current_class_id(self) -> int:
+        data = self.class_combo.currentData()
+        return int(data) if data is not None else 0
+
+    def _next_bbox_id(self) -> int:
+        if not self.label_manager.bboxes:
+            return 0
+        return max(b.id for b in self.label_manager.bboxes) + 1
+
+    def _set_combo_class(self, class_id: int):
+        """选中类别；class_id 越界时动态补一个 class_N 项。"""
+        index = self.class_combo.findData(class_id)
+        if index < 0:
+            self.class_combo.addItem(class_label(class_id), class_id)
+            index = self.class_combo.findData(class_id)
+        self.class_combo.setCurrentIndex(index)
+
+    def _refresh_bbox_class_style(self, bbox_id):
+        item = self.bbox_items.get(bbox_id)
+        if item is not None:
+            item.refresh_class_style()
+
+    def _apply_class_shortcut(self, class_id: int):
+        """数字键：有选中框则改其类别，否则只切换新建框的默认类别。"""
+        if self.polygon_draw_controller.is_active():
+            return
+        self.class_combo.blockSignals(True)
+        self._set_combo_class(class_id)
+        self.class_combo.blockSignals(False)
+
+        bbox_id = self._selected_bbox_id()
+        if bbox_id is None:
+            return
+        row = self._row_for_bbox_id(bbox_id)
+        if row < 0 or self.label_manager.bboxes[row].class_id == class_id:
+            return
+
+        self._push_undo_snapshot()
+        self.label_manager.bboxes[row].class_id = class_id
+        self._refresh_bbox_class_style(bbox_id)
+        self.refresh_bbox_list()
+        self._show_toast(tr("toast.class_set", label=class_label(class_id)))
+
+    # ======================= 复制 / 粘贴 =======================
+
+    def _copy_selected_bbox(self):
+        bbox_id = self._selected_bbox_id()
+        if bbox_id is None:
+            self._show_toast(tr("toast.copy_empty"))
+            return
+        row = self._row_for_bbox_id(bbox_id)
+        if row < 0:
+            return
+        self._clipboard = clone_bboxes([self.label_manager.bboxes[row]])
+        self._show_toast(tr("toast.copy_done", n=1))
+
+    def _copy_all_in_image(self):
+        if not self.label_manager.bboxes:
+            self._show_toast(tr("toast.copy_empty"))
+            return
+        self._clipboard = clone_bboxes(self.label_manager.bboxes)
+        self._show_toast(tr("toast.copy_done", n=len(self._clipboard)))
+
+    def _paste_bboxes(self):
+        if not self._clipboard:
+            self._show_toast(tr("toast.paste_empty"))
+            return
+        img_rect = self._current_img_rect
+        iw, ih = img_rect.width(), img_rect.height()
+        if iw <= 0 or ih <= 0:
+            return
+
+        dx = 10 / iw
+        dy = 10 / ih
+        self._push_undo_snapshot()
+        new_ids = []
+        for src in self._clipboard:
+            bbox = clone_bboxes([src])[0]
+            bbox.id = self._next_bbox_id()
+            if bbox.type == 'rect':
+                bbox.x_center = _clamp01(bbox.x_center + dx, bbox.width)
+                bbox.y_center = _clamp01(bbox.y_center + dy, bbox.height)
+            else:
+                bbox.points = [
+                    (_clamp01(px + dx, 0.0), _clamp01(py + dy, 0.0))
+                    for px, py in (bbox.points or [])
+                ]
+            self.label_manager.add(bbox)
+            item = self._create_gfx_for_bbox(bbox, img_rect)
+            if item is None:
+                continue
+            self.image_view.scene.addItem(item)
+            self.bbox_items[bbox.id] = item
+            new_ids.append(bbox.id)
+
+        if not new_ids:
+            return
+        self.refresh_bbox_list()
+        self._select_bbox_by_id(new_ids[0])
+        self._show_toast(tr("toast.paste_done", n=len(new_ids)))
+
+    # ======================= 盖框模式（同尺寸批量落框） =======================
+
+    def _toggle_stamp_mode(self):
+        if self.image_view.stamp_mode:
+            self.image_view.set_stamp_mode(False)
+            return
+        self._start_stamp_mode()
+
+    def _start_stamp_mode(self):
+        bbox_id = self._selected_bbox_id()
+        if bbox_id is None:
+            self._show_toast(tr("toast.stamp_need_selection"))
+            return
+        row = self._row_for_bbox_id(bbox_id)
+        if row < 0:
+            return
+        bbox = self.label_manager.bboxes[row]
+        if bbox.type != 'rect' or bbox.width <= 0 or bbox.height <= 0:
+            self._show_toast(tr("toast.stamp_rect_only"))
+            return
+
+        self._stamp_template = BBox(
+            id=-1, class_id=bbox.class_id, type='rect',
+            width=bbox.width, height=bbox.height,
+        )
+        self.polygon_draw_controller.cancel()
+        self.image_view.set_stamp_mode(True)
+
+    def _on_stamp_mode_changed(self, enabled: bool):
+        if enabled:
+            self._show_toast(tr("toast.stamp_mode_on"))
+        else:
+            self._stamp_template = None
+            self._show_toast(tr("toast.stamp_mode_off"))
+
+    def _on_stamp_click(self, scene_pos):
+        tpl = self._stamp_template
+        img_rect = self._current_img_rect
+        if tpl is None:
+            return
+        iw, ih = img_rect.width(), img_rect.height()
+        if iw <= 0 or ih <= 0:
+            return
+
+        w, h = tpl.width, tpl.height
+        x_center = _clamp01((scene_pos.x() - img_rect.left()) / iw, w)
+        y_center = _clamp01((scene_pos.y() - img_rect.top()) / ih, h)
+
+        self._push_undo_snapshot()
+        bbox_id = self._next_bbox_id()
+        bbox = BBox(
+            bbox_id, tpl.class_id, type='rect',
+            x_center=x_center, y_center=y_center, width=w, height=h,
+        )
+        self.label_manager.add(bbox)
+
+        item = BBoxItem(QRectF(0, 0, w * iw, h * ih), bbox)
+        item.setPos(x_center * iw - w * iw / 2, y_center * ih - h * ih / 2)
+        item.set_image_rect(img_rect)
+        self._register_bbox_item(item)
+        self.image_view.scene.addItem(item)
+        self.bbox_items[bbox_id] = item
+
+        self.refresh_bbox_list()
+        self._select_bbox_by_id(bbox_id)
+
+
+def _clamp01(value: float, half_extent: float) -> float:
+    """把归一化中心点限制在 [half_extent, 1 - half_extent] 内。"""
+    low = min(half_extent, 1.0)
+    high = max(1.0 - half_extent, low)
+    return max(low, min(high, value))
