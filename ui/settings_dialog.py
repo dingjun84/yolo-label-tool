@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox, QLabel,
-    QComboBox, QSpinBox, QKeySequenceEdit, QPushButton, QMessageBox,
-    QDialogButtonBox,
+    QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QKeySequenceEdit,
+    QPushButton, QMessageBox, QDialogButtonBox,
 )
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QKeySequence
@@ -9,6 +9,7 @@ from PyQt5.QtGui import QKeySequence
 from core.settings_manager import (
     AppSettings, ShortcutKey, load_all, save_settings,
     default_shortcuts, shortcuts_conflict, DEFAULT_SHORTCUTS,
+    DEFAULT_YOLO_API,
 )
 from i18n.translator import tr
 
@@ -70,6 +71,49 @@ class SettingsDialog(QDialog):
         lang_layout.addStretch()
         layout.addWidget(lang_group)
 
+        yolo_group = QGroupBox()
+        yolo_group.setObjectName("yoloGroup")
+        yolo_layout = QVBoxLayout(yolo_group)
+
+        api_row = QHBoxLayout()
+        self.lbl_yolo_api = QLabel()
+        self.edit_yolo_api = QLineEdit()
+        self.edit_yolo_api.setPlaceholderText(DEFAULT_YOLO_API)
+        api_row.addWidget(self.lbl_yolo_api)
+        api_row.addWidget(self.edit_yolo_api)
+        yolo_layout.addLayout(api_row)
+
+        param_row = QHBoxLayout()
+        self.lbl_yolo_conf = QLabel()
+        self.spin_yolo_conf = QDoubleSpinBox()
+        self.spin_yolo_conf.setRange(0.01, 1.00)
+        self.spin_yolo_conf.setSingleStep(0.05)
+        self.spin_yolo_conf.setDecimals(2)
+        self.lbl_yolo_iou = QLabel()
+        self.spin_yolo_iou = QDoubleSpinBox()
+        self.spin_yolo_iou.setRange(0.10, 0.95)
+        self.spin_yolo_iou.setSingleStep(0.05)
+        self.spin_yolo_iou.setDecimals(2)
+        self.lbl_yolo_imgsz = QLabel()
+        self.spin_yolo_imgsz = QSpinBox()
+        self.spin_yolo_imgsz.setRange(64, 1920)
+        self.spin_yolo_imgsz.setSingleStep(32)
+        for widget in (
+            self.lbl_yolo_conf, self.spin_yolo_conf,
+            self.lbl_yolo_iou, self.spin_yolo_iou,
+            self.lbl_yolo_imgsz, self.spin_yolo_imgsz,
+        ):
+            param_row.addWidget(widget)
+        param_row.addStretch()
+        yolo_layout.addLayout(param_row)
+
+        self.lbl_yolo_hint = QLabel()
+        self.lbl_yolo_hint.setWordWrap(True)
+        self.lbl_yolo_hint.setObjectName("secondaryLabel")
+        yolo_layout.addWidget(self.lbl_yolo_hint)
+
+        layout.addWidget(yolo_group)
+
         shortcut_group = QGroupBox()
         shortcut_group.setObjectName("shortcutGroup")
         shortcut_layout = QVBoxLayout(shortcut_group)
@@ -115,6 +159,7 @@ class SettingsDialog(QDialog):
         self._behavior_group = behavior_group
         self._lang_group = lang_group
         self._shortcut_group = shortcut_group
+        self._yolo_group = yolo_group
 
     def _load_values(self):
         s = self._settings
@@ -126,6 +171,11 @@ class SettingsDialog(QDialog):
         idx = self.combo_language.findData(s.language)
         if idx >= 0:
             self.combo_language.setCurrentIndex(idx)
+
+        self.edit_yolo_api.setText(s.yolo_api_url)
+        self.spin_yolo_conf.setValue(s.yolo_conf)
+        self.spin_yolo_iou.setValue(s.yolo_iou)
+        self.spin_yolo_imgsz.setValue(s.yolo_imgsz)
 
         for key, edit in self._shortcut_edits.items():
             seq = s.shortcuts.get(key.value, DEFAULT_SHORTCUTS[key])
@@ -150,6 +200,10 @@ class SettingsDialog(QDialog):
             periodic_auto_save=self.chk_periodic.isChecked(),
             periodic_interval_min=self.spin_interval.value(),
             shortcuts=shortcuts,
+            yolo_api_url=self.edit_yolo_api.text().strip() or DEFAULT_YOLO_API,
+            yolo_conf=self.spin_yolo_conf.value(),
+            yolo_iou=self.spin_yolo_iou.value(),
+            yolo_imgsz=self.spin_yolo_imgsz.value(),
         )
 
     def _on_accept(self):
@@ -174,6 +228,12 @@ class SettingsDialog(QDialog):
         self.lbl_language.setText(tr("settings.language"))
         self._shortcut_group.setTitle(tr("settings.shortcuts"))
         self.btn_reset_shortcuts.setText(tr("settings.reset_shortcuts"))
+        self._yolo_group.setTitle(tr("settings.yolo"))
+        self.lbl_yolo_api.setText(tr("settings.yolo_api"))
+        self.lbl_yolo_conf.setText(tr("settings.yolo_conf"))
+        self.lbl_yolo_iou.setText(tr("settings.yolo_iou"))
+        self.lbl_yolo_imgsz.setText(tr("settings.yolo_imgsz"))
+        self.lbl_yolo_hint.setText(tr("settings.yolo_hint"))
         self._btn_ok.setText(tr("settings.ok"))
         self._btn_cancel.setText(tr("settings.cancel"))
 

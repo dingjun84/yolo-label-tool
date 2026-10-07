@@ -15,11 +15,21 @@ KEY_PERIODIC_INTERVAL_MIN = "periodic_interval_min"
 KEY_SAVE_FOLDER = "save_folder_path"
 KEY_LAST_IMAGE_DIR = "last_image_dir"
 KEY_LAST_FOLDER = "last_folder_path"
+KEY_YOLO_API = "yolo_api_url"
+KEY_YOLO_CONF = "yolo_conf"
+KEY_YOLO_IOU = "yolo_iou"
+KEY_YOLO_IMGSZ = "yolo_imgsz"
 
 DEFAULT_AUTO_SAVE_ON_NAV = True
 DEFAULT_LANGUAGE = "zh"
 DEFAULT_PERIODIC_AUTO_SAVE = False
 DEFAULT_PERIODIC_INTERVAL_MIN = 5
+# 模型预标注服务（yolo26/server.py 的 /predict）
+DEFAULT_YOLO_API = "http://192.168.1.13:8080"
+DEFAULT_YOLO_CONF = 0.25
+DEFAULT_YOLO_IOU = 0.7
+# 推理分辨率必须与训练一致（该权重按 imgsz=1280 训练），不要为了省时间往下调
+DEFAULT_YOLO_IMGSZ = 1280
 
 VALID_LANGUAGES = ("zh", "en", "ja")
 
@@ -60,6 +70,10 @@ class AppSettings:
     periodic_auto_save: bool = DEFAULT_PERIODIC_AUTO_SAVE
     periodic_interval_min: int = DEFAULT_PERIODIC_INTERVAL_MIN
     shortcuts: dict = None
+    yolo_api_url: str = DEFAULT_YOLO_API
+    yolo_conf: float = DEFAULT_YOLO_CONF
+    yolo_iou: float = DEFAULT_YOLO_IOU
+    yolo_imgsz: int = DEFAULT_YOLO_IMGSZ
 
     def __post_init__(self):
         if self.shortcuts is None:
@@ -91,12 +105,26 @@ def load_all() -> AppSettings:
         interval = DEFAULT_PERIODIC_INTERVAL_MIN
     interval = max(1, min(60, interval))
 
+    api_url = str(s.value(KEY_YOLO_API, DEFAULT_YOLO_API) or "").strip()
+    if not api_url:
+        api_url = DEFAULT_YOLO_API
+
+    try:
+        yolo_imgsz = int(s.value(KEY_YOLO_IMGSZ, DEFAULT_YOLO_IMGSZ))
+    except (TypeError, ValueError):
+        yolo_imgsz = DEFAULT_YOLO_IMGSZ
+    yolo_imgsz = max(64, min(1920, yolo_imgsz))
+
     return AppSettings(
         auto_save_on_nav=_read_bool(s, KEY_AUTO_SAVE_ON_NAV, DEFAULT_AUTO_SAVE_ON_NAV),
         language=lang,
         periodic_auto_save=_read_bool(s, KEY_PERIODIC_AUTO_SAVE, DEFAULT_PERIODIC_AUTO_SAVE),
         periodic_interval_min=interval,
         shortcuts=shortcuts,
+        yolo_api_url=api_url,
+        yolo_conf=_read_float(s, KEY_YOLO_CONF, DEFAULT_YOLO_CONF, 0.0, 1.0),
+        yolo_iou=_read_float(s, KEY_YOLO_IOU, DEFAULT_YOLO_IOU, 0.0, 1.0),
+        yolo_imgsz=yolo_imgsz,
     )
 
 
@@ -113,6 +141,18 @@ def _to_bool(value, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).lower() in ("true", "1", "yes")
+
+
+def _read_float(settings: QSettings, key: str, default: float,
+                low: float, high: float) -> float:
+    """读浮点配置并夹到 [low, high]；坏值回退默认值。"""
+    try:
+        v = float(settings.value(key, default))
+    except (TypeError, ValueError):
+        v = default
+    if v != v:  # NaN
+        v = default
+    return min(max(v, low), high)
 
 
 def load_language() -> str:
@@ -155,6 +195,10 @@ def save_settings(settings: AppSettings):
     s.setValue(KEY_PERIODIC_INTERVAL_MIN, int(settings.periodic_interval_min))
     for key in ShortcutKey:
         s.setValue(key.value, settings.shortcuts.get(key.value, DEFAULT_SHORTCUTS[key]))
+    s.setValue(KEY_YOLO_API, settings.yolo_api_url)
+    s.setValue(KEY_YOLO_CONF, float(settings.yolo_conf))
+    s.setValue(KEY_YOLO_IOU, float(settings.yolo_iou))
+    s.setValue(KEY_YOLO_IMGSZ, int(settings.yolo_imgsz))
     s.sync()
 
 
