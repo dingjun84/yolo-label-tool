@@ -1,0 +1,16 @@
+# 每行一个类别，行号（从 0 开始）就是写入 YOLO txt 的 class id。
+# 以 # 开头的行与空行会被忽略。
+# 与 yolo26 的 c13 严格对齐（13 类）——顺序不可调整，改了会让所有标签失效。
+self_avatar
+nav_chat_icon
+nav_contacts_icon
+search_bar
+list_item
+send_button
+incoming_bubble
+outgoing_bubble
+input_bar
+single_chat
+group_chat
+contact_send_message
+nav_groups_icon
