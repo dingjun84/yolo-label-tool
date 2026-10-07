@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox, QLabel,
-    QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QKeySequenceEdit,
+    QComboBox, QSpinBox, QDoubleSpinBox, QKeySequenceEdit,
     QPushButton, QMessageBox, QDialogButtonBox,
 )
 from PyQt5.QtCore import pyqtSignal
@@ -9,7 +9,6 @@ from PyQt5.QtGui import QKeySequence
 from core.settings_manager import (
     AppSettings, ShortcutKey, load_all, save_settings,
     default_shortcuts, shortcuts_conflict, DEFAULT_SHORTCUTS,
-    DEFAULT_YOLO_API,
 )
 from i18n.translator import tr
 
@@ -75,14 +74,7 @@ class SettingsDialog(QDialog):
         yolo_group.setObjectName("yoloGroup")
         yolo_layout = QVBoxLayout(yolo_group)
 
-        api_row = QHBoxLayout()
-        self.lbl_yolo_api = QLabel()
-        self.edit_yolo_api = QLineEdit()
-        self.edit_yolo_api.setPlaceholderText(DEFAULT_YOLO_API)
-        api_row.addWidget(self.lbl_yolo_api)
-        api_row.addWidget(self.edit_yolo_api)
-        yolo_layout.addLayout(api_row)
-
+        # 服务地址不在这里 —— 主界面右侧栏直接改，见 MainWindow.yolo_api_edit
         param_row = QHBoxLayout()
         self.lbl_yolo_conf = QLabel()
         self.spin_yolo_conf = QDoubleSpinBox()
@@ -172,7 +164,6 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self.combo_language.setCurrentIndex(idx)
 
-        self.edit_yolo_api.setText(s.yolo_api_url)
         self.spin_yolo_conf.setValue(s.yolo_conf)
         self.spin_yolo_iou.setValue(s.yolo_iou)
         self.spin_yolo_imgsz.setValue(s.yolo_imgsz)
@@ -200,7 +191,8 @@ class SettingsDialog(QDialog):
             periodic_auto_save=self.chk_periodic.isChecked(),
             periodic_interval_min=self.spin_interval.value(),
             shortcuts=shortcuts,
-            yolo_api_url=self.edit_yolo_api.text().strip() or DEFAULT_YOLO_API,
+            # 地址在右侧栏维护，这里原样带回，避免存设置时把它冲掉
+            yolo_api_url=self._settings.yolo_api_url,
             yolo_conf=self.spin_yolo_conf.value(),
             yolo_iou=self.spin_yolo_iou.value(),
             yolo_imgsz=self.spin_yolo_imgsz.value(),
@@ -229,7 +221,6 @@ class SettingsDialog(QDialog):
         self._shortcut_group.setTitle(tr("settings.shortcuts"))
         self.btn_reset_shortcuts.setText(tr("settings.reset_shortcuts"))
         self._yolo_group.setTitle(tr("settings.yolo"))
-        self.lbl_yolo_api.setText(tr("settings.yolo_api"))
         self.lbl_yolo_conf.setText(tr("settings.yolo_conf"))
         self.lbl_yolo_iou.setText(tr("settings.yolo_iou"))
         self.lbl_yolo_imgsz.setText(tr("settings.yolo_imgsz"))

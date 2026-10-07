@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (
     QMainWindow, QFileDialog, QListWidget, QMessageBox,
     QAction, QDockWidget, QPushButton, QWidget, QActionGroup,
     QVBoxLayout, QHBoxLayout, QListWidgetItem, QComboBox, QLabel, QDialog, QRadioButton, QButtonGroup, QFrame,
-    QProgressDialog
+    QProgressDialog, QLineEdit
 )
 from PyQt5.QtCore import QRectF, pyqtSignal, Qt, QTimer, QPointF
 from PyQt5.QtGui import QColor, QFont, QIcon, QKeySequence, QPixmap
@@ -22,13 +22,14 @@ from core.class_registry import get_class_names, class_label
 from core.yolo_io import load_yolo_txt, save_yolo_txt
 from core.settings_manager import (
     load_all, ShortcutKey, get_shortcut, key_event_matches,
-    load_path_prefs, save_path_pref,
+    load_path_prefs, save_path_pref, save_yolo_api_url,
     KEY_SAVE_FOLDER, KEY_LAST_IMAGE_DIR, KEY_LAST_FOLDER,
+    DEFAULT_YOLO_API,
 )
 from core.undo_stack import UndoStack
 from core.bbox_clone import clone_bboxes
 from core.autolabel import (
-    AutolabelError, autolabel_folder, check_service,
+    AutolabelError, autolabel_folder, check_service, normalize_api_url,
     has_model_prediction, human_label_path, model_label_path,
 )
 from core.capture import CaptureError, CaptureUnavailable, create_backend
@@ -253,6 +254,18 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
+        # 预标注服务地址：就放在右侧栏，改完即生效（失焦时规范化并落盘）
+        self.yolo_api_label = QLabel(tr("label.yolo_api"))
+        self.yolo_api_label.setObjectName("secondaryLabel")
+        layout.addWidget(self.yolo_api_label)
+        self.yolo_api_edit = QLineEdit(self._app_settings.yolo_api_url)
+        self.yolo_api_edit.setPlaceholderText(DEFAULT_YOLO_API)
+        self.yolo_api_edit.setClearButtonEnabled(True)
+        self.yolo_api_edit.editingFinished.connect(self._on_yolo_api_edited)
+        layout.addWidget(self.yolo_api_edit)
+
+        layout.addWidget(self._make_separator())
+
         self.save_path_label = QLabel(tr("label.save_path_none"))
         self.save_path_label.setObjectName("secondaryLabel")
         self.save_path_label.setWordWrap(True)
@@ -404,6 +417,9 @@ class MainWindow(QMainWindow):
     def _apply_settings(self, settings):
         lang_changed = settings.language != self._app_settings.language
         self._app_settings = settings
+        # 地址的唯一入口是右侧栏，设置面板里回来的值同步过去
+        if self.yolo_api_edit.text() != settings.yolo_api_url:
+            self.yolo_api_edit.setText(settings.yolo_api_url)
         if lang_changed:
             set_language(settings.language)
         else:
@@ -433,6 +449,7 @@ class MainWindow(QMainWindow):
         for theme_id, action in self.theme_actions.items():
             action.setText(get_theme_name(theme_id))
         self.action_settings.setText(tr("menu.settings"))
+        self.yolo_api_label.setText(tr("label.yolo_api"))
         self._ui_refs["btn_set_save_path"].setText(tr("btn.set_save_path"))
         self._ui_refs["btn_prev"].setText(tr("btn.prev_image"))
         self._ui_refs["btn_next"].setText(tr("btn.next_image"))
@@ -458,6 +475,21 @@ class MainWindow(QMainWindow):
             )
         else:
             self.save_path_label.setText(tr("label.save_path_none"))
+
+    def _on_yolo_api_edited(self):
+        """右侧栏服务地址失焦/回车后：规范化显示并落盘。"""
+        self._current_yolo_api_url()
+
+    def _current_yolo_api_url(self) -> str:
+        """取右侧栏当前生效的预标注地址；空则回退默认值，顺手规范化和落盘。"""
+        raw = self.yolo_api_edit.text().strip()
+        url = normalize_api_url(raw) if raw else DEFAULT_YOLO_API
+        if url != self.yolo_api_edit.text():
+            self.yolo_api_edit.setText(url)
+        if url != self._app_settings.yolo_api_url:
+            self._app_settings.yolo_api_url = url
+            save_yolo_api_url(url)
+        return url
 
     def _on_mode_changed(self):
         if self.polygon_draw_controller.is_active():
@@ -1041,21 +1073,13 @@ class MainWindow(QMainWindow):
             )
             return
 
-        api_url = self._app_settings.yolo_api_url
+        api_url = self._current_yolo_api_url()
         # 已有非空人工标注的图不必再跑 —— 重跑只会把它的状态打回「待校正」
         pending = [p for p in self.image_list if not self._has_labeled_txt(p)]
         if not pending:
             QMessageBox.information(
                 self, tr("msg.info"), tr("autolabel.nothing_to_do")
             )
-            return
-
-        answer = QMessageBox.question(
-            self, tr("autolabel.title"),
-            tr("autolabel.confirm", count=len(pending), url=api_url),
-            QMessageBox.Ok | QMessageBox.Cancel,
-        )
-        if answer != QMessageBox.Ok:
             return
 
         try:

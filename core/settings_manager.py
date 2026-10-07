@@ -187,6 +187,13 @@ def save_path_pref(key: str, value: str):
     s.sync()
 
 
+def save_yolo_api_url(url: str):
+    """只落盘预标注服务地址 —— 地址改在右侧栏，不该顺带重写其他设置。"""
+    s = _settings()
+    s.setValue(KEY_YOLO_API, str(url or "").strip() or DEFAULT_YOLO_API)
+    s.sync()
+
+
 def save_settings(settings: AppSettings):
     s = _settings()
     s.setValue(KEY_AUTO_SAVE_ON_NAV, bool(settings.auto_save_on_nav))
